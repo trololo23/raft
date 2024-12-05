@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package impl;
+
+option go_package = "proto/";
+
+message LogEntry {
+	int64 Term = 1;
+	string Command = 2;
+	string Key = 3;
+    optional string Value = 4;
+    optional string OldValue = 5; // for CAS
+};
+
+message AppendEntriesRequest {
+    int64 Term = 1;
+    int64 PrevLogIndex = 2;
+    int64 PrevLogTerm = 3;
+    int64 LeaderCommit = 4;
+    int64 LeaderID = 5;
+    repeated LogEntry entries = 6;
+};
+
+message AppendEntriesResponse {
+    int64 Term = 1;
+    bool Success = 2;
+};
+
+message VoteRequest {
+    int64 Term = 1;
+    int64 CandidateID = 2;
+    int64 LastLogIndex = 3;
+    int64 LastLogTerm = 4;
+};
+
+message VoteResponse {
+    int64 Term = 1;
+    bool VoteGranted = 2;
+};
+
+service Node {
+    rpc RequestVote (VoteRequest) returns (VoteResponse);
+    rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+}
