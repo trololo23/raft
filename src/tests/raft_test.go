@@ -58,11 +58,10 @@ func NewTestCluster(count int) []*server.Server {
 	return result
 }
 
-func TestLeaderElection(t *testing.T)  {
+func TestLeaderElection(t *testing.T) {
 	initLogger()
 
 	cluster := NewTestCluster(5)
-
 	assert.Equal(t, int64(-1), cluster[0].GetLeaderID())
 
 	time.Sleep(10 * time.Second)
@@ -70,10 +69,11 @@ func TestLeaderElection(t *testing.T)  {
 
 	cluster[0].Stop()
 
-	time.Sleep(15 * time.Second)
+	time.Sleep(10 * time.Second)
 
-	assert.Greater(t, cluster[1].GetLeaderID(), int64(0))
-	assert.Less(t, cluster[1].GetLeaderID(), int64(5))
+	for id := 1; id < 5; id++ {
+		assert.Equal(t, int64(1), cluster[id].GetLeaderID())
+	}
 }
 
 func TestLogReplication(t *testing.T) {
@@ -82,24 +82,24 @@ func TestLogReplication(t *testing.T) {
 	cluster := NewTestCluster(5)
 	time.Sleep(10 * time.Second)
 
-	value := "2"
+	value := "10"
 	success, err := cluster[0].ReplicateLogEntry("CREATE", "1", &value, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, true, success)
 
 	time.Sleep(5 * time.Second)
 
-	for id := 1; id < 5; id++ {
+	for id := 0; id < 5; id++ {
 		logEntries := cluster[id].GetLogEntries()
 		len := len(*logEntries)
 		assert.Equal(t, 2, len)
 		assert.Equal(t, server.LogEntry{
-			Term: 1,
-			Key: "1",
-			Value: &value,
-			Command: "CREATE",
+			Term:     1,
+			Key:      "1",
+			Value:    &value,
+			Command:  "CREATE",
 			OldValue: nil,
-		}, (*logEntries)[len - 1])
+		}, (*logEntries)[len-1])
 	}
 }
 
@@ -111,15 +111,11 @@ func TestLogSync(t *testing.T) {
 	cluster[1].Stop()
 
 	value := "2"
-	success, err := cluster[0].ReplicateLogEntry("CREATE", "1", &value, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, true, success)
-	success, err = cluster[0].ReplicateLogEntry("CREATE", "2", &value, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, true, success)
-	success, err = cluster[0].ReplicateLogEntry("CREATE", "3", &value, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, true, success)
+	for i := 1; i <=3; i++ {
+		success, err := cluster[0].ReplicateLogEntry("CREATE", fmt.Sprint(i), &value, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, true, success)
+	}
 
 	time.Sleep(5 * time.Second)
 
@@ -131,4 +127,3 @@ func TestLogSync(t *testing.T) {
 	time.Sleep(10 * time.Second)
 	assert.Equal(t, 4, len(*cluster[1].GetLogEntries()))
 }
-

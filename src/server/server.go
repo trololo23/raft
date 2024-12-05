@@ -62,7 +62,7 @@ type Server struct {
 
 	// Log management
 	log         []LogEntry
-	lastApply int64
+	lastApply   int64
 	commitIndex int64
 	nextIndex   map[string]int64
 
@@ -100,7 +100,7 @@ func NewServer(id int64, peers []string) *Server {
 			},
 		},
 		commitIndex: 0,
-		lastApply: 0,
+		lastApply:   0,
 		nextIndex:   make(map[string]int64),
 
 		// State management
@@ -108,10 +108,10 @@ func NewServer(id int64, peers []string) *Server {
 
 		// Timing modules
 		election: TimeModule{
-			Timeout: time.Second * time.Duration(8+id*5),
+			Timeout: time.Second * time.Duration(5+id*3),
 		},
 		heartbeats: TimeModule{
-			Timeout: time.Second * 5,
+			Timeout: time.Second * 3,
 		},
 
 		// Networking
@@ -406,13 +406,13 @@ func (s *Server) ReplicateLogEntry(command, key string, value, oldValue *string)
 		s.commitIndex = int64(len(s.log) - 1)
 		slog.Info("Commiting entry", "ID", s.id, "CommitId", s.commitIndex, "entry", entry)
 
-		if s.commitIndex > s.lastApply {		
+		if s.commitIndex > s.lastApply {
 			for i := s.lastApply + 1; i <= s.commitIndex; i++ {
 				entry := s.log[i]
 				slog.Info("Apply entry", "ID", s.id, "entry", entry)
 				ProcessWrite(entry.Command, entry.Key, entry.Value, entry.OldValue)
 			}
-		
+
 			s.lastApply = s.commitIndex
 		}
 
