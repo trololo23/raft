@@ -34,12 +34,12 @@ func parseFlags() (int64, int, int, []string) {
 	return id, raftPort, httpPort, peers
 }
 
-func setupHTTPHandlers(handler *httphandler.Handler) {
+func setupHTTPHandlers(handler *httphandler.Server) {
 	http.HandleFunc("/get/{key}", handler.GetHandler)
-	// http.HandleFunc("/create", server.CreateHandler)
-	// http.HandleFunc("/delete", server.DeleteHandler)
-	// http.HandleFunc("/update", server.UpdateHandler)
-	// http.HandleFunc("/cas", server.CompareAndSwapHandler)
+	http.HandleFunc("/create", handler.CreateHandler)
+	http.HandleFunc("/delete", handler.DeleteHandler)
+	http.HandleFunc("/update", handler.UpdateHandler)
+	http.HandleFunc("/cas", handler.CompareAndSwapHandler)
 }
 
 func startServers(raftServer *server.Server, raftPort, httpPort int) {
@@ -56,7 +56,7 @@ func main() {
 	slog.Info("Replica:", id, "Peers:", peers)
 
 	raftServer := server.NewServer(id, peers)
-	httpServer := httphandler.NewHandler(raftServer)
+	httpServer := httphandler.NewServer(raftServer)
 
 	setupHTTPHandlers(httpServer)
 	startServers(raftServer, raftPort, httpPort)

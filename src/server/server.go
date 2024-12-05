@@ -53,42 +53,43 @@ type Server struct {
 	proto.UnimplementedNodeServer
 
 	// Identification
-	id           int64
-	leaderID     int64
+	id       int64
+	leaderID int64
 
 	// Term and voting
 	currentTerm  int64
 	lastVotedFor int64
 
 	// Log management
-	log          []LogEntry
-	commitIndex  int64
-	nextIndex    map[string]int64
+	log         []LogEntry
+	lastApply int64
+	commitIndex int64
+	nextIndex   map[string]int64
 
 	// State management
-	state        int
+	state int
 
 	// Timing modules
-	election     TimeModule
-	heartbeats   TimeModule
+	election   TimeModule
+	heartbeats TimeModule
 
 	// Networking
-	grpcModule   *grpc.Server
-	GrpcPort     string
-	peers        []string
+	grpcModule *grpc.Server
+	GrpcPort   string
+	peers      []string
 
 	// Synchronization
-	mu           sync.Mutex
+	mu sync.Mutex
 }
 
 func NewServer(id int64, peers []string) *Server {
 	server := &Server{
 		// Identification
-		id: id,
+		id:       id,
 		leaderID: -1,
 
 		// Term and voting
-		currentTerm: 0,
+		currentTerm:  0,
 		lastVotedFor: -1,
 
 		// Log management
@@ -99,6 +100,7 @@ func NewServer(id int64, peers []string) *Server {
 			},
 		},
 		commitIndex: 0,
+		lastApply: 0,
 		nextIndex:   make(map[string]int64),
 
 		// State management
@@ -219,7 +221,7 @@ func (serv *Server) sendHeartbeats() {
 	serv.heartbeats.Reset(serv.sendHeartbeats)
 }
 
-func (serv *Server) handlePeerHeartbeat(peer string) {	
+func (serv *Server) handlePeerHeartbeat(peer string) {
 	slog.Debug("Send heartbeat to", "peer", peer)
 
 	serv.mu.Lock()
@@ -314,9 +316,23 @@ func (serv *Server) AppendEntries(ctx context.Context, req *proto.AppendEntriesR
 
 	serv.appendEntries(req)
 
-	// if req.LeaderCommit > s.commitIndex {
-	// 	s.applyEntries(req.LeaderCommit)
-	// }
+	// Apply entries
+	if req.LeaderCommit > serv.commitIndex {
+		serv.mu.Lock()
+		defer serv.mu.Unlock()
+
+		for i := serv.commitIndex; i <= req.LeaderCommit; i++ {
+			if i == 0 {
+				continue
+			}
+			entry := serv.log[i]
+			slog.Info("Apply entry", "ID", serv.id, "entry", entry)
+			ProcessWrite(entry.Command, entry.Key, entry.Value, entry.OldValue)
+		}
+
+		serv.commitIndex = req.LeaderCommit
+		serv.lastApply = serv.commitIndex
+	}
 
 	return &proto.AppendEntriesResponse{Term: serv.currentTerm, Success: true}, nil
 }
@@ -346,12 +362,10 @@ func (s *Server) ReplicateLogEntry(command, key string, value, oldValue *string)
 
 	entry := s.prepareLogEntry(command, key, value, oldValue)
 	prevLogIndex, prevLogTerm := s.getLastLogInfo()
-	
-	// Append the new entry to leader's log
+
 	slog.Info("Appended entry to master", "ID", s.id, "entry", entry)
 	s.log = append(s.log, entry)
 
-	// Create channel for acknowledgments
 	ackCh := make(chan bool, len(s.peers))
 	for _, peer := range s.peers {
 		go func(peer string) {
@@ -391,13 +405,23 @@ func (s *Server) ReplicateLogEntry(command, key string, value, oldValue *string)
 	if s.waitForMajorityAcknowledgment(ackCh) {
 		s.commitIndex = int64(len(s.log) - 1)
 		slog.Info("Commiting entry", "ID", s.id, "CommitId", s.commitIndex, "entry", entry)
+
+		if s.commitIndex > s.lastApply {		
+			for i := s.lastApply + 1; i <= s.commitIndex; i++ {
+				entry := s.log[i]
+				slog.Info("Apply entry", "ID", s.id, "entry", entry)
+				ProcessWrite(entry.Command, entry.Key, entry.Value, entry.OldValue)
+			}
+		
+			s.lastApply = s.commitIndex
+		}
+
 		return true, nil
 	}
 
 	return false, fmt.Errorf("Can't replicate %+v", entry)
 }
 
-// validateLeaderState ensures that the server is in LEADER state
 func (s *Server) validateLeaderState() error {
 	if s.state != LEADER {
 		return fmt.Errorf("cannot handle write on replica. LeaderID: %v", s.leaderID)
@@ -405,7 +429,6 @@ func (s *Server) validateLeaderState() error {
 	return nil
 }
 
-// prepareLogEntry creates a new LogEntry with the given parameters
 func (s *Server) prepareLogEntry(command, key string, value, oldValue *string) LogEntry {
 	return LogEntry{
 		Term:     s.currentTerm,
@@ -416,7 +439,6 @@ func (s *Server) prepareLogEntry(command, key string, value, oldValue *string) L
 	}
 }
 
-// getLastLogInfo returns the index and term of the last log entry
 func (s *Server) getLastLogInfo() (prevLogIndex, prevLogTerm int64) {
 	prevLogIndex = int64(len(s.log) - 1)
 	if prevLogIndex >= 0 {
@@ -467,4 +489,58 @@ func (serv *Server) Stop() {
 	serv.grpcModule.GracefulStop()
 	serv.election.Stop()
 	serv.heartbeats.Stop()
+}
+
+/////////////////////////////////////////////////////////// KV
+
+var kv sync.Map
+
+func Get(key any) (any, bool) {
+	return kv.Load(key)
+}
+
+func ProcessWrite(command, key string, value, oldValue *string) (bool, error) {
+	if len(command) == 0 {
+		slog.Error("Invalid command", "command", command)
+		return false, fmt.Errorf("Empty command")
+	}
+
+	switch command {
+	case "CREATE":
+		if value == nil {
+			slog.Error("Null value", "key", key)
+			return false, fmt.Errorf("Null value")
+		}
+		if _, exists := kv.Load(key); exists {
+			return false, fmt.Errorf("already exists")
+		}
+		kv.Store(key, *value)
+	case "DELETE":
+		_, existed := kv.LoadAndDelete(key)
+		return existed, nil
+	case "UPDATE":
+		if value == nil {
+			slog.Error("Null value", "key", key)
+		}
+		_, exists := kv.Load(key)
+		if !exists {
+			return false, nil
+		}
+		kv.Store(key, *value)
+	case "CAS":
+		if value == nil {
+			slog.Error("Null new value", "key", key)
+			return false, fmt.Errorf("Null new value")
+		}
+		if oldValue == nil {
+			slog.Error("Null old value", "key", key)
+			return false, fmt.Errorf("Null old value")
+		}
+		return kv.CompareAndSwap(key, *oldValue, *value), nil
+	default:
+		slog.Error("Invalid command: expected CREATE/DELETE/UPDATE/CAS", "command", command)
+		return false, fmt.Errorf("Invalid command: expected CREATE/DELETE/UPDATE/CAS, got %v", command)
+	}
+
+	return true, nil
 }
